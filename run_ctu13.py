@@ -54,6 +54,7 @@ ANOMALY_COLORS = {
     "Botnet C&C":         "#1565C0",
     "Data Exfiltration":  "#4E342E",
     "Unknown":            "#757575",
+    "not present":        "#757575",
 }
 SEV_ORDER  = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 SEV_PREFIX = {"CRITICAL": "[!!!]", "HIGH": "[!! ]", "MEDIUM": "[!  ]", "LOW": "[.  ]"}
@@ -140,16 +141,16 @@ def classify(row: pd.Series, stats: dict) -> tuple:
     z_dur  = _z(row["flow_duration_s"], stats["dur_mean"],  stats["dur_std"])
 
     if z_byts > 4 or z_pkts > 4:
-        return "DDoS / Flood", "CRITICAL"
+        return "DDoS / Flood", "CRITICAL", f"High byte rate (z_bytes={z_byts:.1f}) or packet rate (z_pkts={z_pkts:.1f}) above normal"
     if z_rst > 3 and z_syn > 1:
-        return "Port Scan", "HIGH"
+        return "Port Scan", "HIGH", f"High RST flags (z_rst={z_rst:.1f}) and SYN activity (z_syn={z_syn:.1f}) indicating scanner activity"
     if z_rst > 3 and row["total_pkts"] < stats["pkts_mean"]:
-        return "Brute Force", "HIGH"
+        return "Brute Force", "HIGH", f"High RST flags (z_rst={z_rst:.1f}) with very low packet volume (total_pkts={int(row['total_pkts'])})"
     if z_fwd > 3 and z_dur > 1:
-        return "Data Exfiltration", "CRITICAL"
+        return "Data Exfiltration", "CRITICAL", f"Large volume of forward bytes (z_fwd={z_fwd:.1f}) over long flow duration (z_dur={z_dur:.1f})"
     if z_dur > 3 and z_byts < 0:
-        return "Botnet C&C", "MEDIUM"
-    return "Unknown", "LOW"
+        return "Botnet C&C", "MEDIUM", f"Abnormally long connection duration (z_dur={z_dur:.1f}) with quiet/low bandwidth profile"
+    return "Unknown", "LOW", "Flagged as outlier by multi-dimensional Isolation Forest model (no simple rule matched)"
 
 
 def label_anomalies(feat: pd.DataFrame) -> list:
@@ -169,11 +170,16 @@ def label_anomalies(feat: pd.DataFrame) -> list:
 
     results = []
     for _, row in flagged.iterrows():
-        atype, sev = classify(row, stats)
+        atype, sev, reason = classify(row, stats)
+        if row["true_label"] == 0:
+            atype = "not present"
+            sev = "LOW"
+            reason = f"Flagged by Isolation Forest model (score={row['if_score']:.4f}) but actual ground truth label is Normal (False Positive)"
         results.append({
             "timestamp":    row["timestamp"],
             "type":         atype,
             "severity":     sev,
+            "reason":       reason,
             "if_score":     row["if_score"],
             "flow_byts_s":  row["flow_byts_s"],
             "total_pkts":   row["total_pkts"],
@@ -213,10 +219,13 @@ def print_report(anomalies: list, feat: pd.DataFrame) -> None:
     ):
         prefix = SEV_PREFIX.get(a["severity"], "[   ]")
         gt = "Attack" if a["true_label"] == 1 else "Normal"
+        response = "True Positive - Anomaly correctly detected" if a["true_label"] == 1 else "False Positive - Anomaly detected but not actually an anomaly (Not Present)"
         print(f"\n  #{i:02d}  {prefix}  {a['severity']}")
         print(f"        Type         : {a['type']}")
         print(f"        Time         : {a['timestamp'].strftime('%Y-%m-%d  %H:%M:%S')}")
         print(f"        IF Score     : {a['if_score']:.4f}  (lower = more anomalous)")
+        print(f"        Reason       : {a['reason']}")
+        print(f"        Response     : {response}")
         print(f"        Byte rate    : {a['flow_byts_s']:>12,.1f}  bytes/s")
         print(f"        Total pkts   : {int(a['total_pkts']):>12,}")
         print(f"        Fwd bytes    : {a['fwd_bytes']:>12,.0f}")
@@ -243,9 +252,32 @@ def print_report(anomalies: list, feat: pd.DataFrame) -> None:
                                 target_names=["Normal (0)", "Attack (1)"],
                                 digits=3))
     cm = confusion_matrix(y_true, y_pred)
-    print(f"  Confusion matrix:")
-    print(f"    TN={cm[0,0]:,}  FP={cm[0,1]:,}")
-    print(f"    FN={cm[1,0]:,}  TP={cm[1,1]:,}")
+    tn, fp, fn, tp = cm.ravel()
+    
+    print(f"  Proper Confusion Matrix Grid:")
+    print(f"    =================================================================")
+    print(f"                           Predicted Normal      Predicted Anomaly")
+    print(f"    Actual Normal (0)      {tn:>14,} (TN)      {fp:>14,} (FP)")
+    print(f"    Actual Attack (1)      {fn:>14,} (FN)      {tp:>14,} (TP)")
+    print(f"    =================================================================")
+    print()
+    print(f"  Confusion Matrix Summary:")
+    print(f"    TN (True Negatives)  : {tn:,} (predicted normal, actual normal)")
+    print(f"    FP (False Positives) : {fp:,} (predicted anomaly, actual normal - Labeled 'not present')")
+    print(f"    FN (False Negatives) : {fn:,} (predicted normal, actual attack)")
+    print(f"    TP (True Positives)  : {tp:,} (predicted anomaly, actual attack)")
+    
+    # Calculate additional metrics & characteristics for True Positives & True Negatives
+    TP_mask = (feat["if_label"] == -1) & (feat["true_label"] == 1)
+    TN_mask = (feat["if_label"] == 1) & (feat["true_label"] == 0)
+    
+    print("\n  DETECTION DETAILS & CHARACTERISTICS:")
+    if tp > 0:
+        print(f"    • True Positives (TP) average byte rate  : {feat[TP_mask]['flow_byts_s'].mean():,.1f} bytes/s")
+        print(f"    • True Positives (TP) average packet rate: {feat[TP_mask]['flow_pkts_s'].mean():,.1f} pkts/s")
+    if tn > 0:
+        print(f"    • True Negatives (TN) average byte rate  : {feat[TN_mask]['flow_byts_s'].mean():,.1f} bytes/s")
+        print(f"    • True Negatives (TN) average packet rate: {feat[TN_mask]['flow_pkts_s'].mean():,.1f} pkts/s")
     print("=" * 72 + "\n")
 
 
@@ -352,7 +384,7 @@ def plot(feat: pd.DataFrame, anomalies: list) -> None:
     plt.savefig(OUT_PNG, dpi=150, bbox_inches="tight",
                 facecolor=fig.get_facecolor())
     print(f"[+] Graph saved -> {OUT_PNG}")
-    plt.show()
+    # plt.show()
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
