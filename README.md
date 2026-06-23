@@ -52,6 +52,46 @@ Every tool call is logged. Human review is always the final step.
 
 ---
 
+## Running with a Local Model (Air-Gapped / Offline)
+
+The agent uses the OpenAI-compatible API, so swapping to a local model via
+[Ollama](https://ollama.com) requires two lines in `agent.py`:
+
+```python
+# Default — OpenAI cloud
+client = OpenAI()
+MODEL  = "gpt-4o"
+
+# Local model via Ollama (no internet required)
+client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+MODEL  = "llama3.1"  # or qwen2.5, mistral-nemo
+```
+
+Everything else — tool definitions, the calling loop, CVE enrichment — works unchanged.
+
+```bash
+# Install and run Ollama
+ollama pull llama3.1
+ollama serve
+
+# Run the agent fully offline
+python agent.py capture.pcap
+```
+
+**Model compatibility for tool calling:**
+
+| Model | Tool calling | Notes |
+|---|---|---|
+| `llama3.1` | Reliable | Recommended for local use |
+| `qwen2.5` | Reliable | Strong at structured output |
+| `mistral-nemo` | Good | Lighter, faster |
+| `phi3` / `phi3.5` | Unreliable | Often ignores tool call schema |
+
+This means the same agent code works in a cloud environment (GPT-4o) *and* in an
+air-gapped network with a local model — no code changes, no internet dependency.
+
+---
+
 ## Detection Engine
 
 The underlying detector (`anomaly_detector_v2.py`) uses **scikit-learn Isolation Forest** —
