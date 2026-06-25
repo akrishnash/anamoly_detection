@@ -226,9 +226,10 @@ def plot(y_true, if_labels, scores, feat_cols,
     ax.axis("off")
 
     plt.tight_layout()
-    plt.savefig("ctu13_all_features.png", dpi=150, bbox_inches="tight",
+    os.makedirs("graphs", exist_ok=True)
+    plt.savefig("graphs/ctu13_all_features.png", dpi=150, bbox_inches="tight",
                 facecolor=fig.get_facecolor())
-    print("[+] Plot saved -> ctu13_all_features.png")
+    print("[+] Plot saved -> graphs/ctu13_all_features.png")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

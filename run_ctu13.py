@@ -38,7 +38,7 @@ NORMAL_CSV  = "sample_logs/CTU13_Normal_Traffic.csv"
 N_SAMPLE    = 6000          # rows to sample from each class
 CONTAMINATION = 0.40        # ~40 % of combined set is real attacks
 BASE_DATE   = datetime(2024, 1, 15)
-OUT_PNG     = "anomaly_report_ctu13.png"
+OUT_PNG     = "graphs/anomaly_report_ctu13.png"
 
 FEATURE_COLS = [
     "flow_byts_s", "flow_pkts_s",
@@ -348,6 +348,7 @@ def plot(feat: pd.DataFrame, anomalies: list) -> None:
                    bbox_to_anchor=(0.5, 0.002), fontsize=9, framealpha=0.92,
                    title="Detected Anomaly Types", title_fontsize=9)
 
+    os.makedirs(os.path.dirname(OUT_PNG), exist_ok=True)
     plt.tight_layout(rect=[0, 0.055, 1, 0.975])
     plt.savefig(OUT_PNG, dpi=150, bbox_inches="tight",
                 facecolor=fig.get_facecolor())

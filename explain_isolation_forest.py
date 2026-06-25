@@ -281,7 +281,8 @@ fig.suptitle(
     fontsize=13, fontweight="bold", y=0.98,
 )
 
-plt.savefig("isolation_forest_explained.png", dpi=150, bbox_inches="tight",
+import os; os.makedirs("graphs", exist_ok=True)
+plt.savefig("graphs/isolation_forest_explained.png", dpi=150, bbox_inches="tight",
             facecolor=fig.get_facecolor())
-print("\n[+] Plot saved -> isolation_forest_explained.png")
+print("\n[+] Plot saved -> graphs/isolation_forest_explained.png")
 plt.show()

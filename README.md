@@ -1,188 +1,104 @@
-# SecureAI Agent — Network Threat Triage
+# Network Anomaly Detection — CTU-13 Botnet Dataset
 
-> **AI-powered cybersecurity agent** that ingests PCAP captures and network logs,
-> detects anomalies with Isolation Forest, and returns grounded threat explanations,
-> CVE context, and analyst-grade mitigations — via an OpenAI tool-calling loop.
-
----
-
-## Architecture
-
-```
-User Query ("analyse capture.pcap for threats")
-          │
-          ▼
-  ┌─────────────────────────────────────┐
-  │          agent.py (GPT-4o)          │
-  │   OpenAI tool-calling loop          │
-  └────────┬──────────────┬────────────┘
-           │              │
-           ▼              ▼
-  analyze_traffic()   lookup_cve()
-           │              │
-           ▼              ▼
-  ┌─────────────────┐  ┌──────────────────────┐
-  │ Isolation Forest│  │ CVE + MITRE ATT&CK   │
-  │ anomaly detector│  │ static knowledge base │
-  │ (anomaly_       │  │ (cve_db.py)          │
-  │  detector_v2.py)│  └──────────────────────┘
-  └─────────────────┘
-           │
-           ▼
-  ┌─────────────────────────────────────┐
-  │  Structured Threat Report           │
-  │  • Executive summary                │
-  │  • Findings table (IP, type, sev.)  │
-  │  • CVEs + ATT&CK per attack type    │
-  │  • Prioritised mitigations          │
-  └─────────────────────────────────────┘
-```
-
-The agent is **bounded** — it analyses and advises; it never takes automated action.
-Every tool call is logged. Human review is always the final step.
-
----
-
-## Tools
-
-| Tool | What it does |
-|---|---|
-| `analyze_traffic(file, contamination, window)` | Runs Isolation Forest on a PCAP or CSV log. Returns anomaly episodes with type, severity, source IP, IF score, and traffic stats. |
-| `lookup_cve(attack_type)` | Returns CVEs, MITRE ATT&CK technique, and mitigations for a detected attack type. |
-
----
-
-## Running with a Local Model (Air-Gapped / Offline)
-
-The agent uses the OpenAI-compatible API, so swapping to a local model via
-[Ollama](https://ollama.com) requires two lines in `agent.py`:
-
-```python
-# Default — OpenAI cloud
-client = OpenAI()
-MODEL  = "gpt-4o"
-
-# Local model via Ollama (no internet required)
-client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
-MODEL  = "llama3.1"  # or qwen2.5, mistral-nemo
-```
-
-Everything else — tool definitions, the calling loop, CVE enrichment — works unchanged.
-
-```bash
-# Install and run Ollama
-ollama pull llama3.1
-ollama serve
-
-# Run the agent fully offline
-python agent.py capture.pcap
-```
-
-**Model compatibility for tool calling:**
-
-| Model | Tool calling | Notes |
-|---|---|---|
-| `llama3.1` | Reliable | Recommended for local use |
-| `qwen2.5` | Reliable | Strong at structured output |
-| `mistral-nemo` | Good | Lighter, faster |
-| `phi3` / `phi3.5` | Unreliable | Often ignores tool call schema |
-
-This means the same agent code works in a cloud environment (GPT-4o) *and* in an
-air-gapped network with a local model — no code changes, no internet dependency.
-
----
-
-## Detection Engine
-
-The underlying detector (`anomaly_detector_v2.py`) uses **scikit-learn Isolation Forest** —
-fully unsupervised, no labelled data required. Validated on real botnet traffic:
-
-| Dataset | Precision | Recall | Notes |
-|---|---|---|---|
-| CTU-13 (Neris, Rbot, Menti botnets) | 69.5 % | 55.5 % | Zero labels used during training |
-
-**Detected anomaly types:**
-
-| Type | Detection Signal |
-|---|---|
-| Port Scan | Many distinct destination ports from one source IP |
-| Brute Force | High failed-connection ratio, single target port |
-| Traffic Spike / DDoS | Z-score spike on byte-rate per time window |
-| Data Exfiltration | Sustained high outbound volume (rolling Z-score) |
-| Night Activity | Unusual connection count during 00:00–05:59 |
-| Botnet C&C | Long idle flows, low packet rate, irregular timing |
+> **Unsupervised anomaly detection** on real-world botnet traffic using **Isolation Forest**.
+> Validated on the CTU-13 dataset (38,898 attack flows + 53,314 normal flows).
+> Includes a dataset comparison pipeline, explainability walkthrough, and an optional AI agent layer.
 
 ---
 
 ## Quick Start
 
+### 1. Clone and install
+
 ```bash
 git clone https://github.com/akrishnash/anamoly_detection.git
 cd anamoly_detection
 pip install -r requirements.txt
-
-export OPENAI_API_KEY=sk-...
-
-# Analyse a log file
-python agent.py sample_logs/network_traffic.log
-
-# Analyse a PCAP
-python agent.py capture.pcap --contamination 0.03
-
-# Interactive chat mode
-python agent.py --interactive
 ```
 
-### Generate sample data
+### 2. Download the CTU-13 dataset
+
+Place both CSVs in `sample_logs/`:
+
+```
+sample_logs/
+├── CTU13_Attack_Traffic.csv    # 38,898 botnet flows
+└── CTU13_Normal_Traffic.csv    # 53,314 benign campus flows
+```
+
+Download source: [imfaisalmalik/CTU13-CSV-Dataset](https://github.com/imfaisalmalik/CTU13-CSV-Dataset)
+
+### 3. Run the scripts
 
 ```bash
-python generate_sample_log.py       # creates sample_logs/network_traffic.log
-python generate_sample_pcap.py      # creates sample_logs/network_traffic.pcap
+# Main detector — 10-feature Isolation Forest on CTU-13 (6K rows each)
+python run_ctu13.py
+
+# All-features version — all CICFlowMeter columns + log1p transform
+python run_ctu13_v2.py
+
+# Attack vs Normal comparison — 20K rows each, Cohen's d, ROC, PR, threshold sweep
+python compare_datasets.py
+
+# Isolation Forest explainability walkthrough (tiny 13-point dataset)
+python explain_isolation_forest.py
+
+# SecureAI Agent — GPT-4o tool-calling loop over the detector (requires OpenAI key)
+export OPENAI_API_KEY=sk-...
+python agent.py
 ```
+
+All graphs are saved to the `graphs/` folder.
 
 ---
 
-## Sample Output
+## Results
+
+### run_ctu13.py  (6,000 flows per class, 10 features)
+
+| Class | Precision | Recall | F1 |
+|---|---|---|---|
+| Normal | 0.630 | 0.757 | 0.687 |
+| Attack | **0.695** | **0.555** | **0.617** |
+| Overall accuracy | | | **0.656** |
 
 ```
-================================================================
-  SecureAI Agent  —  Cybersecurity Triage
-  Isolation Forest + GPT-4o Tool Calling
-================================================================
-
-## Threat Report — sample_logs/network_traffic.log
-
-### Executive Summary
-Analysis of 7,722 network records spanning 2024-01-15 identified **5 anomaly
-episodes** across 4 distinct attack types. Two critical-severity events require
-immediate investigation: a data exfiltration attempt from 192.168.1.25 and an
-off-hours traffic spike from 192.168.1.50.
-
-### Findings
-
-| # | Time  | Source IP       | Type               | Severity |
-|---|-------|-----------------|-------------------|----------|
-| 1 | 19:43 | 192.168.1.25    | Data Exfiltration  | CRITICAL |
-| 2 | 02:20 | 192.168.1.50    | Night Activity     | CRITICAL |
-| 3 | 10:28 | 45.33.32.156    | Traffic Spike      | HIGH     |
-| 4 | 16:27 | 192.168.200.1   | Brute Force        | HIGH     |
-| 5 | 13:58 | 192.168.100.50  | Port Scan          | HIGH     |
-
-### CVE Context
-
-Data Exfiltration — MITRE T1048
-Relevant CVEs: CVE-2023-0669 (GoAnywhere MFT RCE, CVSS 7.2),
-CVE-2021-26855 (ProxyLogon, CVSS 9.8)
-
-Brute Force — MITRE T1110
-Relevant CVEs: CVE-2023-38408 (OpenSSH RCE, CVSS 9.8),
-CVE-2019-0708 (BlueKeep RDP, CVSS 9.8)
-
-### Prioritised Mitigations
-1. [CRITICAL] Block and investigate 192.168.1.25 — egress >500 MB in single window
-2. [CRITICAL] Review off-hours activity from 192.168.1.50 — possible C2 beacon
-3. [HIGH] Enforce account lockout on SSH/RDP targets of 192.168.200.1
+Confusion Matrix:
+  TN = 4,541   FP = 1,459
+  FN = 2,671   TP = 3,329
 ```
+
+### compare_datasets.py  (20,000 flows per class, same 10 features)
+
+| Metric | Value |
+|---|---|
+| Attack Precision | 0.637 |
+| Attack Recall | 0.509 |
+| ROC-AUC | **0.706** |
+| Avg Precision | 0.612 |
+
+---
+
+## Why Attack Traffic Has Low Byte Rates (and Still Signals Attack)
+
+CTU-13 is predominantly **botnet C&C traffic** — deliberately stealthy and low-volume.
+The median byte rate for attack flows is near zero. This is not "nothing happening":
+it is suspiciously *too quiet* for real user traffic.
+
+The actual discriminating signals (measured by Cohen's d effect size):
+
+| Feature | Cohen's d | Direction | Meaning |
+|---|---|---|---|
+| SYN Flag Count | **+0.86** | Attack > Normal | Constant connection attempts = port scans / C&C setup |
+| Packet Rate | **+0.63** | Attack > Normal | Bimodal: near-zero beacons AND DDoS burst spikes |
+| Fwd Pkts/s | **+0.63** | Attack > Normal | High forward rate in scanning phases |
+| FIN Flag Count | **+0.31** | Attack > Normal | Many abruptly closed connections (scan and move on) |
+| Pkt Len Mean | **-0.19** | Normal > Attack | Normal has larger packets (HTTP content, file data) |
+| Bwd Bytes | **-0.02** | Normal > Attack | C&C victims reply with near-empty ACKs |
+
+Isolation Forest detects anomalies in the **joint feature space** — a flow with near-zero bytes
++ elevated SYN + specific timing occupies an isolated region that a random tree cuts off
+very quickly, earning a low (anomalous) score.
 
 ---
 
@@ -191,42 +107,101 @@ CVE-2019-0708 (BlueKeep RDP, CVSS 9.8)
 ```
 anamoly_detection/
 │
+├── run_ctu13.py               ← Main detector  (10 features, 6K rows per class)
+├── run_ctu13_v2.py            ← All-features version (all CICFlowMeter columns)
+├── compare_datasets.py        ← Attack vs Normal comparison (20K rows each)
+├── explain_isolation_forest.py← Step-by-step IF explainability on toy data
+│
 ├── agent.py                   ← SecureAI Agent (OpenAI tool-calling loop)
 ├── cve_db.py                  ← CVE + MITRE ATT&CK knowledge base
 │
-├── anomaly_detector_v2.py     ← Isolation Forest detection engine (PCAP + CSV)
-├── anomaly_detector.py        ← v1 statistical detector (Z-score)
-├── run_ctu13.py               ← Real-world CTU-13 botnet evaluation runner
+├── sample_logs/
+│   ├── CTU13_Attack_Traffic.csv
+│   └── CTU13_Normal_Traffic.csv
 │
-├── generate_sample_log.py     ← Generates synthetic log with 5 planted anomalies
-├── generate_sample_pcap.py    ← Generates synthetic PCAP
+├── graphs/                    ← All output PNGs saved here
+│   ├── anomaly_report_ctu13.png
+│   ├── ctu13_all_features.png
+│   ├── ctu13_comparison.png
+│   └── isolation_forest_explained.png
 │
 ├── requirements.txt
-│
-├── anomaly_report_v2.png      ← Sample 4-panel detection graph (CSV input)
-├── anomaly_report_pcap.png    ← Sample detection graph (PCAP input)
-└── anomaly_report_ctu13.png   ← CTU-13 real botnet detection results
+├── RESEARCH.md                ← 4 research directions to elevate this project
+├── PROGRESS.md                ← Experiment log and next steps
+└── paper.md                   ← Draft paper / write-up
 ```
 
 ---
 
-## Design Choices
+## Architecture
 
-**Why Isolation Forest?** Fully unsupervised — no labelled attack data required.
-Works on any network environment without retraining. The 55% recall on CTU-13 botnet
-traffic (zero labels) demonstrates real-world utility.
-
-**Why bounded tool calling?** The agent loop is deliberately constrained: it can read
-files and query a knowledge base, nothing else. No automated firewall rules, no ticket
-creation, no blocking. This is an *advisory* agent — the analyst stays in the loop.
-
-**Why save reports to disk?** Every run produces a timestamped Markdown file. In
-regulated environments audit trails are non-negotiable.
+```
+CTU-13 CSV (attack + normal)
+          │
+          ▼
+    load_and_merge()           sample N rows per class, assign true_label
+          │
+          ▼
+    featurise()                map CICFlowMeter columns → 10 feature cols
+          │
+          ▼
+  StandardScaler + IsolationForest (n_estimators=200, contamination=0.40)
+          │
+          ├── score_samples()  → continuous IF score (lower = more anomalous)
+          └── fit_predict()    → binary flag (-1 anomaly / +1 normal)
+                    │
+                    ▼
+            classify()         heuristic rules (z-score per feature)
+                    │
+                    ▼
+          Console report + 4-panel PNG  (saved to graphs/)
+```
 
 ---
 
-## Dataset Credit
+## How Isolation Forest Works
 
-- **CTU-13**: Sebastián García, Martin Grill, Jan Stiborek, Alejandro Zunino.
-  *"An empirical comparison of botnet detection methods"*, Computers & Security, 2014.
-  [https://www.stratosphereips.org/datasets-ctu13](https://www.stratosphereips.org/datasets-ctu13)
+1. Builds `n_estimators` random trees, each grown on a random feature subset.
+2. At each node it picks a random feature and a random split value.
+3. **Anomalous points are isolated near the root** — they need fewer splits.
+4. The anomaly score = average path length across all trees (normalised).
+5. Points with short average path length get a low (negative) score → flagged.
+
+The `explain_isolation_forest.py` script walks through this on a 13-point toy dataset
+with full visualisation of every tree split.
+
+---
+
+## SecureAI Agent (Optional)
+
+`agent.py` wraps the detector in a GPT-4o tool-calling loop that:
+
+- Calls `analyze_traffic()` to run the IF detector and return anomaly episodes
+- Calls `lookup_cve()` to enrich each finding with CVEs and MITRE ATT&CK techniques
+- Returns a structured analyst-grade threat report
+
+Requires `OPENAI_API_KEY`. The agent is **advisory only** — it never takes automated
+action. Every tool call is logged. Human review is always the final step.
+
+**Local / air-gapped mode** — swap two lines in `agent.py`:
+
+```python
+# Cloud
+client = OpenAI()
+MODEL  = "gpt-4o"
+
+# Local via Ollama (no internet required)
+client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+MODEL  = "llama3.1"
+```
+
+---
+
+## Dataset
+
+**CTU-13** — Sebastian Garcia, Martin Grill, Jan Stiborek, Alejandro Zunino.
+*"An empirical comparison of botnet detection methods"*, Computers & Security, 2014.
+[https://www.stratosphereips.org/datasets-ctu13](https://www.stratosphereips.org/datasets-ctu13)
+
+13 scenarios of real botnet traffic (Neris, Rbot, Menti, Sogou, Murlo, NSIS.ay botnets)
+captured on the CTU university network, mixed with normal campus background traffic.
