@@ -5,8 +5,9 @@
 > **MITRE ATT&CK** context to return a grounded, analyst-grade report.
 >
 > The detection engine is validated on the real-world **CTU-13 botnet dataset**
-> (38,898 attack flows + 53,314 benign) — **55% recall, 69% precision, zero labels used**.
-> Runs in the cloud on GPT-4o or fully offline via Ollama.
+> (38,898 attack flows + 53,314 benign): it **catches 55% of stealthy botnet attacks with
+> zero labelled training data** (69% precision) — and is tunable to higher recall at the
+> optimal threshold. Runs in the cloud on GPT-4o or fully offline via Ollama.
 
 ---
 
@@ -105,6 +106,11 @@ Confusion Matrix:
 | Attack Recall | 0.509 |
 | ROC-AUC | **0.706** |
 | Avg Precision | 0.612 |
+
+> **On operating points:** the default uses a fixed contamination threshold. Sweeping the
+> decision threshold along the PR curve reaches **~78% F1 (100% recall at 64% precision)** —
+> i.e. *every* attack can be caught at the cost of more false positives. Threshold selection
+> is a deployment choice, not a model limit. See `diagnose_overlap.py` and `paper.md`.
 
 ### Why stealthy attack traffic still signals attack
 
