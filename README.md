@@ -23,7 +23,7 @@ pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-**Live:** _deploy free on [share.streamlit.io](https://share.streamlit.io) → point it at `streamlit_app.py`, then drop the URL here._
+**▶ Live app:** [anomaly-detection-5e6hvdpv5q7dmmisymrpdh.streamlit.app](https://anomaly-detection-5e6hvdpv5q7dmmisymrpdh.streamlit.app/)
 
 ---
 
