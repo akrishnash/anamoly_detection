@@ -11,6 +11,22 @@
 
 ---
 
+## Interactive demo
+
+An interactive **Streamlit app** (`streamlit_app.py`) lets you explore *why* the detector
+plateaus: it runs Isolation Forest live on real CTU-13 traffic and shows the benign-vs-malicious
+score overlap, the KS ceiling, and how recall/precision trade off as you move the threshold —
+while AUC and KS stay put.
+
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+
+**Live:** _deploy free on [share.streamlit.io](https://share.streamlit.io) → point it at `streamlit_app.py`, then drop the URL here._
+
+---
+
 ## What the agent does
 
 ```
