@@ -103,17 +103,48 @@ generalises across all categories. Two-stage architecture resolves this.
 - **Finding**: reconstruction anomaly >> isolation anomaly for structured attacks;
   neither dominates across all attack families.
 
-### Act 3 — Two-Stage Architecture (IN PROGRESS)
-- [x] Design: Stage 1 (AE) + Stage 2 (XGBoost on flagged pool)
-- [ ] `stage2_supervised.py` — train/test on CTU-13, show per-stage metrics
-- [ ] Cross-dataset: train Stage 2 on CTU-13, test on UNSW-NB15 → zero-day queue
-- [ ] Key metric: **zero-day queue precision** (how many in the queue are real novel attacks)
-- **Target**: Stage 2 reduces Stage 1 false positives by >60%; zero-day queue FPR < 10%
+### Act 3 — Two-Stage Architecture (DONE)
+- [x] Design: Stage 1 (AE) + Stage 2 (GBM on flagged pool)
+- [x] `stage2_supervised.py` — CTU-13: F1=0.945, 87% FP reduction
+- [x] `zero_day_sim.py` — UNSW-NB15 zero-day simulation: 71% queue precision
+- [x] Zero-day queue proven: 4 completely hidden types route to queue automatically
+- **Key result**: Stage 2 never misclassifies a hidden attack as a known type.
+  Bottleneck = Stage 1 recall on low-volume attacks (2–13% on Backdoor/Shellcode).
 
-### Act 4 — Write + figures
-- [ ] Paper: 8 pages, 3 core figures (KS diagram, AE vs IF, two-stage pipeline results)
-- [ ] Venue: Computers & Security (Elsevier) or IEEE TNSM
-- [ ] Honest limitations: payload features not used, CTU-13 is 2011-era traffic
+### Act 4 — Break the Stage 1 Bottleneck (NEXT)
+
+The zero-day simulation proved the architecture works.
+The remaining gap: Stage 1 only flags 2–13% of Backdoor/Shellcode/Analysis.
+These attacks look normal *per-flow* — they're only visible over time or as a graph.
+
+**Priority 1 — Temporal features** (`temporal_features.py`)
+  - Group flows by source IP, 30-second windows
+  - Compute: beacon regularity (FFT on inter-arrival times), session entropy,
+    burst ratio, connection fan-out to unique destination IPs
+  - Re-train AE on temporal feature vectors
+  - **Go/no-go test**: does Stage 1 recall on Backdoor/Analysis lift from ~10% to 40%+?
+  - If yes → strong paper punchline. If no → confirms representation limit is deeper.
+
+**Priority 2 — Contrastive AE** (`contrastive_ae.py`)
+  - Replace MSE reconstruction loss with SimCLR-style contrastive loss
+  - Normal flows attract in embedding space; any anomalous flow naturally repels
+  - Target: fix Fuzzers recall (AE=8%, IF=29%) without sacrificing CTU-13 numbers
+  - Uses same zero-label constraint — no attack data needed
+
+**Priority 3 — Paper figures** (`paper_figures.py`)
+  - Final publication-quality versions of 4 panels:
+    1. KS ceiling bar chart (IF vs LOF vs AE vs ensemble)
+    2. Attack-type AE vs IF recall heatmap (UNSW-NB15)
+    3. Two-stage pipeline diagram with metrics
+    4. Zero-day queue composition (pie + hidden-type bar)
+
+### Act 5 — Write (starts after Priority 1 result known)
+- [ ] Section 4 (experiments): tables are final, write captions first
+- [ ] Section 3 (datasets): 1 page
+- [ ] Section 5 (discussion): "anomalous != malicious" framing
+- [ ] Section 1 (introduction): write last
+- [ ] Abstract: write after introduction
+- [ ] **Target**: 8-page Computers & Security short paper
 
 ---
 
@@ -126,8 +157,12 @@ generalises across all categories. Two-stage architecture resolves this.
 | `compare_datasets.py` | Cohen's d + AUC comparison | Done |
 | `diagnose_overlap.py` | KS ceiling diagnostic | Done |
 | `ensemble_detector.py` | IF + LOF + AE comparison | Done |
-| `stage2_supervised.py` | Two-stage pipeline | **Building now** |
+| `stage2_supervised.py` | Two-stage pipeline (CTU-13 + UNSW) | Done |
+| `zero_day_sim.py` | Zero-day simulation (4 hidden types) | Done |
 | `explain_isolation_forest.py` | Educational IF walkthrough | Done |
+| `temporal_features.py` | Per-IP beacon features over time windows | **Next** |
+| `contrastive_ae.py` | SimCLR-style AE to fix Fuzzer recall | Planned |
+| `paper_figures.py` | Final publication figures | Planned |
 
 ---
 

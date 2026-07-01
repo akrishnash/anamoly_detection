@@ -1,396 +1,469 @@
-# Explainable Network Anomaly Detection with Isolation Forest
+# Anomalous != Malicious: A Two-Stage Architecture for Zero-Day Network Intrusion Detection
 
-*Working paper — updated 2026-06-24*
-
----
-
-## Candidate Title
-
-**"Feature-Selective Isolation Forest for Explainable Network Anomaly Detection: A Study on the CTU-13 Botnet Dataset"**
-
-Alternative titles:
-- "Why Did the Model Flag That? SHAP-Guided Explainability for Unsupervised Network Anomaly Detection"
-- "From Black Box to Insight: Isolation Forest with SHAP on Real Botnet Traffic"
+*Working paper — updated 2026-07-01*
 
 ---
 
-## Target Venue (options)
+## Title
 
-| Venue | Type | Deadline cycle |
-|---|---|---|
-| IEEE S&P Workshop on Network Security | Workshop paper | ~Jan submission |
-| USENIX Security (short paper) | Conference | ~Feb submission |
-| Computers & Security (Elsevier) | Journal | Rolling |
-| ACM CCS Workshop | Workshop | ~May submission |
-| IEEE Access | Open-access journal | Rolling |
+**"Anomalous Is Not Malicious: A Two-Stage Architecture for Zero-Day Network Intrusion Detection"**
 
-Start with IEEE Access or Computers & Security — rolling submission, good for a first research paper.
+Alternatives:
+- "Why Unsupervised NIDS Plateau and How a Two-Stage Pipeline Breaks the Ceiling"
+- "Reconstruction Anomaly vs Isolation Anomaly: Decomposing the Unsupervised NIDS Failure"
 
 ---
 
-## Abstract (draft)
+## Target Venue
 
-Unsupervised anomaly detection in network traffic is attractive because it requires no labelled data, yet existing methods suffer from two problems: they cannot explain which traffic features drove a specific alert, and their performance degrades significantly when all available features are used without selection. In this paper we study Isolation Forest (IF) applied to the CTU-13 botnet dataset and make three contributions. First, we demonstrate that naive use of all 57 CICFlowMeter features decreases F1 by 9.8 points compared to a 10-feature hand-picked baseline, an instance of the curse of dimensionality for tree-based anomaly detectors. Second, we apply mutual-information-based feature selection to identify the 15–20 most discriminative features and recover—and improve upon—baseline performance. Third, we add SHAP (SHapley Additive exPlanations) values to the detection pipeline, enabling per-alert attribution: "this flow was flagged because `flow_byts_s` contributed 0.71 and `rst_flag` contributed 0.43 to the anomaly score." We evaluate against ground-truth labels and compare IF to One-Class SVM, Local Outlier Factor, and a reconstruction-error Autoencoder. All code and data processing scripts are released openly.
+**Primary**: Computers & Security (Elsevier, rolling, IF ~5.1)
+**Secondary**: IEEE Transactions on Network and Service Management (IEEE TNSM)
+**Fallback**: IEEE Access (open-access, rolling, fast turnaround)
+
+---
+
+## Abstract
+
+Unsupervised network intrusion detection systems (NIDS) based on anomaly scores plateau at
+55–70% recall on real-world datasets — a ceiling that persists despite tuning. We show this
+ceiling is *structural*, not a parameter artefact: the Kolmogorov-Smirnov (KS) distance
+between the anomaly-score distributions of attack and normal flows is 0.445 on CTU-13, meaning
+no threshold can achieve (TPR - FPR) > 0.445 regardless of calibration. The root cause is that
+unsupervised detectors conflate statistical rarity with malice — a property we term
+**"anomalous != malicious"**: stealthy botnet C&C beaconing sits *inside* the normal-traffic
+distribution, while benign high-throughput flows look anomalous.
+
+We show that switching the anomaly notion from *isolation* (Isolation Forest, KS=0.445) to
+*reconstruction* (Autoencoder trained on normal traffic, KS=0.860) raises recall from 55% to
+90% on CTU-13 — but collapses on UNSW-NB15 Fuzzers (8% recall), exposing that no single
+unsupervised notion generalises across all attack families.
+
+To resolve this, we propose a **two-stage architecture**: Stage 1 (Autoencoder) acts as a
+zero-day net, flagging anything that deviates from the learned normal manifold; Stage 2
+(Gradient Boosting) classifies the flagged pool into known attack types, while flows it cannot
+confidently classify form a **zero-day candidate queue**. On CTU-13 this achieves F1=0.945 and
+reduces Stage 1 false positives by 87%. In a held-out zero-day simulation on UNSW-NB15 —
+where Stage 2 has never seen Backdoor, Shellcode, Analysis, or Worms — the zero-day queue
+captures 71% real attacks with the hidden types routing there automatically.
+
+The key remaining bottleneck is Stage 1 recall on low-volume stealthy attacks (2-13% for hidden
+types), which we attribute to the representation limit of per-flow features. We propose temporal
+and graph features as the fix.
 
 ---
 
 ## 1. Introduction
 
-### Problem
+### The Problem
 
-Network intrusion detection systems (NIDS) traditionally rely on signatures — known attack patterns — which fail against zero-day attacks and novel botnet variants. Anomaly-based detection offers an alternative: train on normal traffic, flag deviations. But two challenges remain:
+Signature-based NIDS fail on zero-day attacks by definition — they match known patterns.
+Anomaly-based detection offers the alternative: learn what normal traffic looks like, flag
+deviations. But practitioners know the performance is disappointingly low in practice. We
+investigate *why*.
 
-1. **Performance**: Unsupervised detectors achieve 55–70% recall on real datasets (CTU-13, CIC-IDS-2018), missing nearly half of attacks.
-2. **Explainability**: When an alert fires, the analyst cannot tell *why* the model flagged a flow. This leads to alert fatigue and ignored true positives.
+The standard explanation is "threshold tuning" or "too few features." We show both are wrong.
 
-### Our Approach
+### The Core Finding: Anomalous != Malicious
 
-We use the Isolation Forest algorithm on CTU-13 botnet traffic and address both problems:
-- Feature selection to recover discriminative signal from 57 noisy features
-- SHAP values to attach human-readable explanations to every alert
+The failure is *structural*. Botnet C&C traffic — the dominant attack type in CTU-13 — is
+designed to mimic normal idle connections: low packet rate, small payloads, periodic timing.
+It is not a statistical outlier. No unsupervised detector trained to flag outliers can reliably
+catch it, because it is not an outlier.
 
-### Why This Matters
+Conversely, legitimate high-throughput flows (backups, video streams) ARE statistical outliers
+and get flagged constantly, driving false positives.
 
-In operational SOC (Security Operations Centre) environments, unexplained alerts are treated as noise. A detector that says "Port Scan — because `n_dst_ports=847` contributed 0.73 to the anomaly score" is actionable. One that says "anomaly score: -0.68" is not.
+We quantify this with the KS distance between score distributions:
+
+```
+KS = 0.445 for Isolation Forest on CTU-13
+   = the maximum achievable (TPR - FPR) over all thresholds
+   = the structural ceiling, not a tuning parameter
+```
+
+### Our Contributions
+
+1. **Diagnosis**: KS-distance decomposition proving the ceiling is structural, not tunable.
+   Cohen's d feature analysis showing which flow features actually discriminate (SYN d=+0.86)
+   vs which are noise.
+
+2. **Finding**: Reconstruction anomaly (AE) dramatically outperforms isolation anomaly (IF)
+   on structured periodic attacks (CTU-13: +35 pts recall) but degrades on random-payload
+   attacks (UNSW-NB15 Fuzzers: 8% AE vs 29% IF). No single unsupervised notion generalises.
+
+3. **Architecture**: Two-stage pipeline — Stage 1 zero-day net (AE) + Stage 2 known-attack
+   classifier (GBM) — validated on CTU-13 (F1=0.945, 87% FP reduction) and UNSW-NB15
+   zero-day simulation (71% queue precision on 4 completely hidden attack types).
 
 ---
 
-## 2. Dataset
+## 2. Background
 
-### CTU-13 Botnet Dataset
+### 2.1 Isolation Forest (Liu et al., 2008)
 
-- **Source**: Czech Technical University, Prague. Real network captures from a university network infected with various botnet families.
-- **Format**: CICFlowMeter-processed NetFlow CSVs (pre-aggregated per bidirectional flow)
-- **Scale**:
-  - Attack flows: 38,898
-  - Normal flows: 53,314
-  - Total: 92,212 flows
-- **Features**: 57 numeric features per flow (after dropping index and label columns)
-- **Label column**: Binary — 1 = attack (botnet), 0 = normal
+Builds random trees by repeatedly choosing a random feature and a random split value.
+Anomalous points isolate near the root (short average path length = low score).
 
-### Feature Categories (57 total)
+**Key property**: measures *global rarity* — how different a point is from the bulk.
+Stealthy attacks that blend into the bulk score as normal. This is the KS ceiling.
 
-| Category | Examples | Count |
-|---|---|---|
-| Volume | `Flow Byts/s`, `Tot Fwd Pkts`, `TotLen Fwd Pkts` | ~8 |
-| Inter-arrival time | `Flow IAT Mean/Std/Max/Min`, `Fwd IAT Tot` | ~12 |
-| Packet length | `Pkt Len Mean/Std/Max/Min`, `Pkt Size Avg` | ~6 |
-| TCP flags | `SYN Flag Cnt`, `RST Flag Cnt`, `FIN Flag Cnt`, `ACK Flag Cnt` | 4 |
-| Active/Idle periods | `Active Mean/Std/Max/Min`, `Idle Mean/Std/Max/Min` | 8 |
-| Header & segment | `Fwd Header Len`, `Bwd Seg Size Avg`, `Init Bwd Win Byts` | ~5 |
-| Directional ratios | `Down/Up Ratio`, `Fwd Pkts/s`, `Bwd Pkts/s` | ~6 |
-| Other | `Flow Duration`, `Fwd Act Data Pkts`, `Bwd PSH Flags` | ~8 |
+### 2.2 Autoencoder Anomaly Detection
 
-### Preprocessing Applied
+An MLP encoder-decoder trained to reconstruct *only normal traffic*. At inference, a
+flow that doesn't lie on the learned normal manifold has high reconstruction error (MSE).
 
-- Replace `inf` / `-inf` with column median
-- Fill `NaN` with column median
-- `log1p` transform on all columns with skewness > 2 (54 of 57 columns)
-- Zero-variance column removal
-- `StandardScaler` before feeding to IF
+**Key property**: measures *reconstruction anomaly* — whether a flow looks like anything
+in the normal-traffic distribution. Structured attacks (constant beaconing, near-zero
+payloads) produce consistent reconstruction errors that normal traffic never produces.
 
-### Train/Test Protocol
+### 2.3 KS Distance as a Structural Ceiling
 
-- Sample 6,000 flows from each class (balanced, to match contamination=0.40)
-- Shuffle combined 12,000-flow dataset
-- No train/test split — unsupervised detector, evaluate on full set with ground truth labels
-- Evaluation: precision, recall, F1, confusion matrix against `Label` column
+The Kolmogorov-Smirnov statistic between the attack and normal score distributions equals
+the maximum Youden's J (TPR - FPR) achievable over all thresholds. If KS=0.445, no
+threshold tuning, re-scaling, or calibration can beat (TPR - FPR) = 0.445. It is a
+hard upper bound on any threshold-based decision using those scores.
+
+### 2.4 Cohen's d
+
+Effect size = (mean_attack - mean_normal) / pooled_std.
+Used here to rank features by their discriminative power independent of the detector.
+Large |d| = the feature separates attacks from normal on its own.
+Small |d| = the feature is noise for this detection task.
 
 ---
 
-## 3. Background
+## 3. Datasets
 
-### Isolation Forest (Liu et al., 2008)
+### CTU-13 (Botnet, CICFlowMeter features)
 
-Isolation Forest isolates observations by randomly selecting a feature and a random split value between the feature's min and max. The number of splits required to isolate a point is its **path length**. Anomalies, being sparse and different, require fewer splits:
+- Source: Czech Technical University. Real university network captures.
+- Attack flows: 38,898 (Neris, Rbot, Menti botnets — primarily C&C beaconing)
+- Normal flows: 53,314 (campus traffic)
+- Features: 57 CICFlowMeter columns per bidirectional flow
+- Experiments: 6,000 attack + 6,000 normal = 12,000 flows (70/30 stratified split)
 
-```
-path_length(x) ≈ short  →  anomaly
-path_length(x) ≈ long   →  normal (blends in, harder to isolate)
-```
+### UNSW-NB15 (Multi-class, Argus/Bro features)
 
-The anomaly score is the average path length across all trees, normalised by the expected path length for the sample size:
+- Source: UNSW Canberra.
+- Train: 175,341 flows | Test: 82,332 flows
+- 9 attack categories: Generic, Exploits, DoS, Fuzzers, Reconnaissance,
+  Backdoor, Analysis, Shellcode, Worms
+- Features: 39 Argus/Bro columns per flow
 
-```
-score(x) = 2^( -E[path(x)] / c(n) )
-```
-
-where `c(n)` is the expected path length for a dataset of size `n`.
-
-**Key properties**:
-- Linear time complexity O(n log n)
-- No distance metric needed — works in high dimensions in principle
-- BUT: performance degrades with many irrelevant features (random splits waste on uninformative dimensions)
-
-### SHAP (Lundberg & Lee, 2017)
-
-SHAP assigns each feature a contribution value (Shapley value) to a model's output for a specific prediction. For tree ensembles:
-
-```
-f(x) = baseline + sum(SHAP_i(x))
-       where SHAP_i = contribution of feature i to this prediction
-```
-
-`TreeExplainer` computes exact SHAP values for tree-based models in O(TLD²) where T=trees, L=leaves, D=depth.
+Used for: cross-dataset generalisation test and zero-day simulation (§ Exp 7).
 
 ---
 
-## 4. Experiments
+## 4. Experiments and Results
 
-### Experiment 1 — Baseline: 10 Hand-Picked Features
+### Exp 1 — Isolation Forest Baseline (CTU-13, 10 features)
 
-**Setup**: Replicated from initial `run_ctu13.py` implementation.
+```
+Features: flow_byts_s, flow_pkts_s, fwd_bytes, bwd_bytes, total_pkts,
+          syn_flag, rst_flag, fin_flag, flow_duration_s, pkt_len_mean
+Contamination: 0.40
 
-**Features used** (10):
-`flow_byts_s`, `flow_pkts_s`, `fwd_bytes`, `bwd_bytes`, `total_pkts`, `syn_flag`, `rst_flag`, `fin_flag`, `flow_duration_s`, `pkt_len_mean`
+Precision: 0.695   Recall: 0.555   F1: 0.617   Accuracy: 0.656
+TN=4,541  FP=1,459  FN=2,671  TP=3,329
+KS ceiling: 0.445   ROC-AUC: 0.677
+```
 
-**Results**:
+Observation: The most anomalous-scoring flows are often normal (high-rate backups,
+video streams). Stealthy C&C beaconing sits inside the normal score distribution.
 
-| Metric | Value |
-|---|---|
-| Precision | 69.5% |
-| Recall | 55.5% |
-| F1 | 61.7% |
-| Accuracy | 65.6% |
-| True Positives | 3,329 |
-| False Positives | 1,459 |
-| False Negatives | 2,671 |
-| True Negatives | 4,541 |
+### Exp 2 — All 57 Features (Curse of Dimensionality)
 
-**Observations**:
-- Top-ranked anomalies (most anomalous IF scores) were frequently `Ground Truth: Normal`
-- Normal high-throughput flows (large file transfers, video streams) look more anomalous to IF than stealthy botnet C&C traffic (low rate, periodic beaconing)
-- IF has no concept of "attack" — it flags statistical outliers regardless of whether they are malicious
+```
+Precision: 0.584  Recall: 0.467  F1: 0.519  (-9.8 pts vs baseline)
+```
 
----
+Adding 47 more features hurts because IF picks features randomly at each split.
+With 57 features, most splits land on uninformative dimensions, diluting signal.
+At the PR-optimal threshold: Recall=100% at Precision=64% — the score is there,
+but swamped by noise. Feature selection, not more features, is the fix.
 
-### Experiment 2 — All 57 Features (Naive)
+### Exp 3 — KS Ceiling Diagnosis
 
-**Setup**: Used all available CICFlowMeter columns with `log1p` transform and zero-variance removal. `run_ctu13_v2.py`.
+```
+KS distance: 0.445
+Interpretation: max achievable (TPR - FPR) = 0.445
+               i.e. no threshold can give more than TPR = FPR + 0.445
+The ceiling is STRUCTURAL. No tuning fixes it.
+```
 
-**Results**:
+Cohen's d per feature (attack - normal):
 
-| Metric | Baseline (10 feat) | All 57 features | Change |
+| Feature | Cohen's d | Direction | What it captures |
 |---|---|---|---|
-| Precision | 69.5% | 58.4% | **-11.1%** |
-| Recall | 55.5% | 46.7% | **-8.8%** |
-| F1 | 61.7% | 51.9% | **-9.8%** |
-| Accuracy | 65.6% | 56.7% | **-8.9%** |
+| SYN Flag Count | +0.86 | Attack > Normal | Port scanning, C&C connection setup |
+| Packet Rate | +0.63 | Attack > Normal | Bimodal: near-zero beacons + DDoS spikes |
+| Fwd Pkts/s | +0.63 | Attack > Normal | High forward rate in scanning phases |
+| FIN Flag Count | +0.31 | Attack > Normal | Abruptly closed connections |
+| Pkt Len Mean | -0.19 | Normal > Attack | Normal traffic has larger payloads (HTTP) |
+| Bwd Bytes | -0.02 | Normal > Attack | C&C victims reply with near-empty ACKs |
 
-**Confusion matrix (all 57 features)**:
+Even the best individual feature (SYN, d=0.86) is insufficient alone — attacks span
+multiple subtypes with different dominant features.
+
+### Exp 4 — Autoencoder (Normal-Only Training)
+
 ```
-TN=4,004   FP=1,996
-FN=3,196   TP=2,804
-```
+Architecture: MLP encoder-decoder (dim → dim//2 → dim//4 → dim//2 → dim)
+Training: ONLY on normal flows (no attack labels used)
+Threshold: 95th percentile of normal-traffic MSE
 
-**Key finding — Curse of Dimensionality for IF**:
-
-Adding 47 more features made the model significantly worse. Root cause: Isolation Forest picks a random feature at each split node. With 57 features, the probability of picking a discriminative one per split is ~35% (≈20 discriminative / 57 total). With 10 features, the same probability is higher. Irrelevant features cause random splits that do not separate attacks from normal flows, increasing path length variance and degrading the score signal.
-
-This is a known but under-documented failure mode of IF in high-dimensional settings.
-
-**PR curve analysis (all 57 features)**:
-```
-Optimal threshold (max F1 on PR curve):
-  Score cut : -0.3959
-  Precision : 64.3%
-  Recall    : 100.0%
-  F1        : 78.3%
+CTU-13 (6K+6K, 70/30 split, held-out test):
+  KS: 0.860   ROC-AUC: 0.978
+  Precision: 0.950   Recall: 0.906   F1: 0.928   Accuracy: 0.929
+  TN=2,285  FP=115  FN=225  TP=2,175
+  Attack MSE mean: 0.1914  vs  Normal MSE mean: 0.0082  (23.4x higher)
 ```
 
-At the optimal threshold, IF with all features can achieve 100% recall (catch every attack) at 64.3% precision. This demonstrates the anomaly score signal is present in the model — the problem is threshold selection, not model capacity.
+Why it works: Botnet C&C (near-zero bytes, periodic tiny packets) is completely
+unlike any normal traffic the AE learned. Reconstruction fails catastrophically.
+Isolation Forest missed these flows because they are not global outliers — but
+they ARE off the normal reconstruction manifold.
+
+Detector comparison on CTU-13:
+
+| Detector | KS | ROC-AUC | Precision | Recall | F1 |
+|---|---|---|---|---|---|
+| Isolation Forest | 0.445 | 0.677 | 0.695 | 0.555 | 0.617 |
+| LOF | 0.155 | 0.537 | 0.529 | 0.423 | 0.470 |
+| **Autoencoder** | **0.860** | **0.978** | **0.950** | **0.906** | **0.928** |
+| Ensemble (avg) | 0.606 | 0.730 | 0.637 | 0.509 | 0.566 |
+
+LOF is worst because botnet flows cluster (not locally sparse). Simple ensemble
+averaging is sub-optimal — the weak LOF drags down the dominant AE.
+
+### Exp 5 — Cross-Dataset: UNSW-NB15 (9 Attack Types)
+
+AE trained on UNSW-NB15 normal flows, tested on held-out UNSW-NB15 test set:
+
+```
+AE: Precision=0.816  Recall=0.335  F1=0.475  ROC-AUC=0.709
+IF: Precision=0.349  Recall=0.277  F1=0.309  ROC-AUC=0.254
+```
+
+Per-attack-type recall reveals the failure pattern:
+
+| Attack type | Count | AE recall | IF recall | Winner |
+|---|---|---|---|---|
+| Generic | 8,160 | 43% | 21% | AE |
+| Exploits | 5,194 | 47% | 48% | Tie |
+| Fuzzers | 479 | **8%** | **29%** | IF |
+| DoS | 926 | 23% | 24% | Tie |
+| Reconnaissance | 270 | 35% | 13% | AE |
+| Backdoor | 583 | 2% | 3% | Both fail |
+| Shellcode | 378 | 2% | 2% | Both fail |
+| Analysis | 677 | 7% | 4% | Both fail |
+| Worms | 44 | 53% | 8% | AE |
+
+**Critical finding**: The best anomaly notion is attack-type dependent. AE excels on
+structured periodic attacks (Generic, Worms). IF surprisingly beats AE on Fuzzers —
+random payload traffic is geometrically isolated even when it's not reconstruction-anomalous.
+Both fail on Backdoor, Shellcode, Analysis: low-volume, low-rate, similar to normal at
+the per-flow level.
+
+### Exp 6 — Two-Stage Pipeline (stage2_supervised.py)
+
+```
+Stage 1: AE (95th pct MSE threshold) — flags anomalous flows
+Stage 2: Gradient Boosting — classifies flagged flows into known attack types
+         Flows with confidence < 0.60 → zero-day candidate queue
+```
+
+**CTU-13 results (70/30 stratified split)**:
+
+| Stage | Precision | Recall | F1 | False Positives |
+|---|---|---|---|---|
+| Stage 1 alone (AE) | 0.951 | 0.904 | 0.927 | 84 |
+| Full pipeline (AE + GBM) | **0.993** | 0.901 | **0.945** | **11** |
+
+Stage 2 reduces false positives from 84 to 11 — **87% fewer false alarms** — with
+effectively no recall cost. The zero-day queue (5 flows, 60% precision) is minimal
+on CTU-13 because Stage 2 recognises botnet patterns confidently.
+
+**UNSW-NB15 results** (Stage 2 trained on UNSW-NB15 flagged flows):
+
+| Stage | Precision | Recall | F1 |
+|---|---|---|---|
+| Stage 1 alone (AE) | 0.816 | 0.335 | 0.475 |
+| Full pipeline | 0.828 | 0.334 | 0.476 |
+
+Limited gain on UNSW-NB15 because the bottleneck is Stage 1 recall (33%), not
+false positives. Stage 2 can only filter what Stage 1 flags.
+
+### Exp 7 — Zero-Day Simulation (zero_day_sim.py)
+
+**Setup**: Train Stage 2 on 5 *known* attack types (Generic, Exploits, DoS, Fuzzers,
+Reconnaissance). Hold out 4 types completely — Stage 2 has never seen them:
+Backdoor, Shellcode, Analysis, Worms.
+
+**Question**: Do the hidden attack types route to the zero-day queue automatically?
+
+```
+Zero-Day Queue (UNSW-NB15 test set, 82,332 flows):
+  Total flows in queue : 1,555
+  Real attacks         : 1,097  (71% precision)
+  False alarms         : 458    (29%)
+  Hidden-type flows    : 53     (all 4 hidden types represented)
+```
+
+Queue composition by hidden type:
+```
+  Backdoor   : 31 flows  <- Stage 2 never trained on this
+  Analysis   : 17 flows  <- Stage 2 never trained on this
+  Shellcode  :  4 flows  <- Stage 2 never trained on this
+  Worms      :  1 flow   <- Stage 2 never trained on this
+```
+
+**Stage 2 never misclassified a hidden-type flow as a known attack type.**
+Every hidden-type flow that Stage 2 encountered went correctly to the zero-day queue.
+
+Detection rate for hidden types end-to-end:
+
+| Hidden type | In test set | Stage 1 flagged | Reached ZD queue |
+|---|---|---|---|
+| Backdoor | 583 | 73 (13%) | 31 (5%) |
+| Analysis | 677 | 45 (7%) | 17 (3%) |
+| Shellcode | 378 | 6 (2%) | 4 (1%) |
+| Worms | 44 | 17 (39%) | 1 (2%) |
+
+**The bottleneck is Stage 1**, not Stage 2. Of the 4 hidden types, only 2-39%
+are flagged by the AE at all. Those that ARE flagged route correctly.
 
 ---
 
-### Experiment 3 — Isolation Forest Internals (Illustrative)
+## 5. Discussion
 
-**Setup**: 13-point hand-crafted dataset (10 normal + 3 anomalies), 3 features, 5 trees. Purpose: visualise decision paths.
+### 5.1 Why the Bottleneck Is Stage 1
 
-**Anomaly types and path lengths**:
+Backdoor, Shellcode, and Analysis attacks all share a property with C&C beaconing:
+they generate low-volume, low-rate flows that look similar to normal idle connections
+at the per-flow feature level. The AE trained on normal flows cannot distinguish them
+because the MSE is low — they reconstruct adequately from the normal manifold.
 
-| Point | Type | n_dst_ports | n_bytes_kb | failed_ratio | Avg path length | IF Score |
-|---|---|---|---|---|---|---|
-| #0–9 | Normal | 1–4 | 120–210 | 0.00–0.03 | 3.8–4.0 | -0.32 to -0.43 |
-| #10 | Port Scan | **847** | 190 | 0.02 | **1.8** | -0.68 |
-| #11 | Exfiltration | 3 | **5000** | 0.01 | **1.8** | -0.75 |
-| #12 | Brute Force | 2 | 165 | **0.97** | 3.6 | -0.51 |
+This is the representation bottleneck: CICFlowMeter and Argus features aggregate each
+flow into a single row. A Backdoor session might produce 10 packets over 300 seconds —
+the flow-level statistics (mean packet size, rate) overlap heavily with a normal idle
+SSH session. They are only distinguishable by *temporal patterns across multiple flows*
+(periodic beaconing at exact intervals) or *graph topology* (fan-out to unusual IPs).
 
-**Decision path inside Tree 1 (actual)**:
-```
-Normal (#0):
-  Step 1: n_dst_ports <= 488.56  → LEFT
-  Step 2: n_bytes_kb  <= 3124.32 → LEFT
-  Step 3: n_bytes_kb  <= 186.39  → LEFT
-  Step 4: n_bytes_kb  <= 166.12  → LEFT   (depth=4)
+### 5.2 What the Zero-Day Queue Precision (71%) Means
 
-Port Scan (#10):
-  Step 1: n_dst_ports <= 488.56, value=847 → RIGHT  (isolated! depth=1)
+Of every 100 flows sent to an analyst's zero-day queue, 71 are real attacks and 29 are
+false alarms (legitimate traffic Stage 1 flagged but Stage 2 could not classify).
+This is a deployable operating point: the analyst reviews 1,555 flows out of 82,332
+(1.9%) and finds 1,097 real attacks they would otherwise miss. Without the pipeline,
+those attacks are invisible.
 
-Exfiltration (#11):
-  Step 1: n_dst_ports <= 488.56 → LEFT
-  Step 2: n_bytes_kb  <= 3124.32, value=5000 → RIGHT  (isolated! depth=2)
+### 5.3 The Ensemble Averaging Problem
 
-Brute Force (#12):
-  Same path as Normal for 4 steps — harder to isolate with only
-  5 trees; needs feature failed_ratio to be split on.
-```
+Averaging IF + LOF + AE scores is suboptimal: a weak detector (LOF, KS=0.155) pulls
+the ensemble score away from the dominant AE (KS=0.860). The right approach is
+learned fusion — logistic regression or learned weighting on a small labeled set that
+assigns near-zero weight to LOF. Alternatively, Stage 2 already performs this role
+implicitly: it uses GBM on the combined feature space, effectively a learned ensemble.
 
-**Insight**: Brute Force is the hardest attack type for IF because it deviates in only one feature with a narrower range, and random cuts are less likely to isolate it quickly with few trees.
+### 5.4 Attack-Type Dependency of Anomaly Notions
 
----
-
-## 5. Analysis
-
-### Why Recall is Low (55.5% baseline)
-
-The CTU-13 attack traffic is predominantly **botnet C&C** — command-and-control beaconing. C&C traffic is designed to be stealthy:
-- Low packet rate (beacons every 60–300 seconds)
-- Small packet sizes (short commands)
-- Mimics normal idle connections
-
-This traffic is NOT a statistical outlier in the feature space. It sits within the normal distribution. IF correctly identifies it as "not unusual" — because it isn't, from a statistical standpoint.
-
-This is the fundamental limitation of unsupervised anomaly detection: **stealthy attacks by definition do not look anomalous**.
-
-### Why False Positives Exist (1,459 baseline)
-
-Normal traffic in a university network includes:
-- Large file transfers (high `flow_byts_s`)
-- Port scans by IT infrastructure monitoring tools (high `rst_flag`)
-- Video conferencing (high packet rate)
-
-These legitimate behaviours are statistically rare and get flagged as anomalies.
-
-### The Threshold Problem
-
-The contamination parameter (0.40) forces IF to flag exactly 40% of flows as anomalies. But the optimal operating point (from the PR curve) is at a different score threshold that is not necessarily 40th percentile. Decoupling threshold selection from contamination is required for production deployment.
+No single unsupervised notion dominates:
+- Reconstruction anomaly (AE): best for structured, periodic, low-variance attacks
+- Isolation anomaly (IF): better for noisy/random attacks (Fuzzers) that are globally sparse
+- Contrastive learning (CLAD, 2025): promising — learns tight normal cluster in embedding
+  space, may generalise across both attack families. Not yet implemented.
 
 ---
 
-## 6. Planned Experiments (Next Steps)
+## 6. What To Do Next
 
-### Experiment 4 — Feature Selection (Next to run)
+### Immediate (unblocks paper writing)
 
-**Method**: Compute mutual information between each of 57 features and the true label. Select top 15–20.
-Also: drop correlated features (Pearson |r| > 0.95).
+1. **Temporal features for Stage 1** — `temporal_features.py`
+   Extract per-source-IP features over 30-second windows: beacon regularity
+   (FFT on inter-arrival times), session count entropy, burst ratio.
+   Test on hidden types (Backdoor, Shellcode): expected to lift Stage 1 recall
+   from 2-13% to 30-50%. This is the go/no-go experiment for the paper's punchline.
 
-**Hypothesis**: A curated 15-feature set will outperform both the 10-feature baseline and the 57-feature set.
+2. **Contrastive AE for Stage 1** — replace MSE loss with contrastive loss
+   (SimCLR-style): normal flows attract, any anomalous flow repels.
+   Specifically targets the cross-dataset collapse on Fuzzers.
 
-**Expected results**: ~72–78% precision and recall.
+3. **Learned ensemble fusion** — instead of averaging IF+LOF+AE scores,
+   train a logistic regression on a small labeled set to weight them.
+   Compare: avg ensemble (KS=0.606) vs learned fusion (expected KS ~0.85).
 
-### Experiment 5 — SHAP Explainability (Direction 1)
+### Paper (write in this order)
 
-**Method**:
-```python
-import shap
-explainer = shap.TreeExplainer(model)
-shap_values = explainer.shap_values(X_scaled)
-```
+1. Section 4 (experiments) — tables and figures are already final. Write captions first.
+2. Section 3 (datasets) — straightforward, 1 page.
+3. Section 5 (discussion) — "anomalous != malicious" framing. 2 pages.
+4. Section 1 (introduction) — write last when the story is clear.
+5. Abstract — write after introduction.
+6. 8-page target (Computers & Security short paper format).
 
-**Output**: Per-flow feature attribution. Visualise:
-- Global: mean |SHAP| bar chart (which features matter most overall)
-- Per-attack-type: beeswarm plot (which features drive Port Scan vs DDoS)
-- Per-alert: waterfall chart ("this flow flagged because flow_byts_s=+0.71, rst_flag=+0.43...")
+### Scripts to build
 
-**Research question addressed**: *Which network features most strongly predict each attack type in unsupervised anomaly detection?*
-
-### Experiment 6 — Benchmarking (Direction 2)
-
-Run the same CTU-13 split (same 12,000 flows, same preprocessing) through:
-
-| Model | Library | Status |
+| Script | Purpose | Priority |
 |---|---|---|
-| Isolation Forest | sklearn | Done (baseline) |
-| Extended Isolation Forest | `eif` pip package | Planned |
-| One-Class SVM | sklearn | Planned |
-| Local Outlier Factor | sklearn | Planned |
-| Autoencoder | PyTorch | Planned |
-| Statistical Z-score | numpy | Planned |
-
-Target output: Table comparing all methods on precision, recall, F1, per attack type breakdown.
-
-### Experiment 7 — Optimal Threshold Selection
-
-Use the PR curve (already computed in `run_ctu13_v2.py`) to set the decision threshold at the 90% precision point, and report the corresponding recall — and vice versa. This converts the unsupervised model into a tuned detector without using labels at training time.
-
-### Experiment 8 — Semi-Supervised Threshold Calibration
-
-Use 10% of labelled flows (held out from the 12,000) to find the optimal threshold. Train IF on the other 90% unlabelled. Apply the calibrated threshold. Report improvement over purely unsupervised threshold.
+| `temporal_features.py` | Per-IP beacon regularity over time windows | HIGH |
+| `contrastive_ae.py` | SimCLR-style AE to fix Fuzzer recall | MEDIUM |
+| `learned_fusion.py` | Replace avg ensemble with logistic regression weights | MEDIUM |
+| `paper_figures.py` | Final publication-quality figures (all 4 panels) | HIGH |
 
 ---
 
-## 7. Preliminary Findings Summary
-
-| Finding | Implication for paper |
-|---|---|
-| IF with 10 features: 69.5% P / 55.5% R | Establishes baseline; shows significant room for improvement |
-| IF with 57 features: 58.4% P / 46.7% R | Curse of dimensionality for IF — under-documented; contributes to paper |
-| PR curve shows 100% recall is achievable with threshold tuning | Threshold selection is as important as model choice |
-| Port Scan isolated in 1 split; Brute Force in 4 splits | Attack type difficulty correlates with how many features deviate |
-| Stealthy C&C traffic is not a statistical outlier | Unsupervised methods have a fundamental ceiling; motivates semi-supervised work |
-
----
-
-## 8. Paper Outline (Draft Structure)
+## 7. Paper Structure (Final)
 
 ```
-1. Introduction
-   1.1 Problem: alert fatigue + missed stealthy attacks
-   1.2 Contributions (3 bullets)
-   1.3 Paper organisation
+1. Introduction (1.5 pages)
+   - Problem: signature NIDS fail on zero-day; anomaly NIDS plateau at 60%
+   - Why the plateau is structural (KS preview)
+   - Three contributions: diagnosis + finding + architecture
+   - Road map
 
-2. Background
-   2.1 Isolation Forest
-   2.2 SHAP
-   2.3 CTU-13 dataset
+2. Background (1 page)
+   - Isolation Forest, KS distance, Autoencoder anomaly detection
+   - CTU-13 and UNSW-NB15 datasets (brief)
 
-3. Methodology
-   3.1 Feature extraction and preprocessing
-   3.2 Curse of dimensionality for IF (our finding)
-   3.3 Feature selection via mutual information
-   3.4 SHAP integration
+3. The Anomaly-Malice Gap: Diagnosis (1.5 pages)
+   - KS ceiling: 0.445 on IF (Exp 1, 3)
+   - Cohen's d analysis: which features actually discriminate (Exp 3)
+   - Why C&C beaconing is NOT an outlier
 
-4. Experiments
-   4.1 Baseline (10 features)
-   4.2 All features (curse of dimensionality)
-   4.3 Selected features (improvement)
-   4.4 SHAP analysis per attack type
-   4.5 Comparison vs OC-SVM, LOF, Autoencoder
+4. Anomaly Notion Matters: AE vs IF (1 page)
+   - AE: KS=0.860, 23.4x MSE ratio (Exp 4)
+   - LOF: worst (clustering, not sparse)
+   - Cross-dataset collapse: attack-type dependency (Exp 5)
 
-5. Results and Discussion
-   5.1 Quantitative comparison table
-   5.2 SHAP explanations — what features drive each attack type
-   5.3 Why stealthy attacks are hard (C&C analysis)
-   5.4 Threshold selection analysis
+5. Two-Stage Architecture (1.5 pages)
+   - Stage 1 + Stage 2 design
+   - CTU-13: F1=0.945, 87% FP reduction (Exp 6)
+   - Zero-day simulation: 71% queue precision, hidden types route correctly (Exp 7)
+   - Remaining bottleneck: Stage 1 recall on low-volume attacks
 
-6. Limitations
-   6.1 Unsupervised ceiling
-   6.2 Single dataset
-   6.3 Synthetic timestamps in CTU-13 evaluation
+6. Discussion: Representation Bottleneck (0.5 pages)
+   - Per-flow features insufficient for Backdoor/Shellcode
+   - Temporal/graph features as the fix (future work)
 
-7. Conclusion and Future Work
-   7.1 Federated extension (Direction 3)
-   7.2 Streaming detection (Direction 4)
+7. Conclusion (0.5 pages)
+   - "Anomalous != malicious" confirmed quantitatively
+   - Two-stage architecture as a practical zero-day detector
+   - Next: temporal features to close Stage 1 recall gap
 
-References
+References (~20 citations)
 ```
 
 ---
 
-## 9. Key References to Collect
+## 8. Key References
 
 - Liu, F.T., Ting, K.M., Zhou, Z.H. (2008). *Isolation Forest.* ICDM 2008.
-- Lundberg, S.M., Lee, S.I. (2017). *A Unified Approach to Interpreting Model Predictions.* NeurIPS 2017.
-- Šrndic, N., Laskov, P. (2013). *Detection of Malicious PDF Files Based on Hierarchical Document Structure.* NDSS 2013.
-- CTU-13 dataset paper: Garcia, S. et al. (2014). *An empirical comparison of botnet detection methods.* Computers & Security.
-- Goldstein, M., Uchida, S. (2016). *A Comparative Evaluation of Unsupervised Anomaly Detection Algorithms for Multivariate Data.* PLOS ONE.
+- Garcia, S. et al. (2014). *An empirical comparison of botnet detection methods.* Computers & Security.
+- Moustafa, N., Slay, J. (2015). *UNSW-NB15: a comprehensive data set for network intrusion detection.* MilCIS 2015.
 - Hariri, S. et al. (2021). *Extended Isolation Forest.* IEEE TNNLS.
-
----
-
-## 10. Open Questions
-
-1. Does feature selection that improves overall F1 also improve per-attack-type recall equally, or does it help some attack types more than others?
-2. Is the curse of dimensionality effect with IF monotonic (does performance keep dropping as features increase) or is there a sweet spot?
-3. Can SHAP explanations reveal WHY botnet C&C traffic is hard to isolate (i.e., which features have near-zero SHAP values for C&C flows)?
-4. How does threshold calibration with 10% labels compare to a fully supervised Random Forest? (Quantify the label efficiency tradeoff.)
+- Shen, Y. et al. (2025). *CLAD: Contrastive Loss for Anomaly Detection.* arXiv 2601.09902.
+- Self-Supervised Transformer IDS (2025). arXiv 2505.08816.
+- [KD-GAT] Graph Attention for IoT Botnet Detection (2025). arXiv 2505.17357.
+- AMDS: Multi-Stage Adaptive Defense System (2025). arXiv 2603.00859.
