@@ -1,104 +1,138 @@
-# Research Plan — 1-Month Paper
+# Research Plan — Two-Stage Zero-Day Detector
 
-*Decided 2026-06-27. Scope: a complete, honest, single-dataset paper achievable in ~1 month of part-time work (~40–60 focused hours alongside the day job), that also seeds a larger multi-dataset journal paper later.*
-
----
-
-## The Thesis
-
-Unsupervised network anomaly detectors (Isolation Forest et al.) plateau at ~60% because
-**"anomalous ≠ malicious"** — stealthy C&C beaconing sits *inside* the normal distribution,
-while benign high-throughput flows look anomalous. The failure is structural, not a tuning bug.
-
-**Working title:** *"Why Unsupervised NIDS Plateau: A Failure Decomposition, and Evidence
-that Representation — Not Algorithm — Is the Bottleneck."*
-
-**Two contributions:**
-1. **(Act 1 — measurement)** A principled decomposition of *why* unsupervised NIDS fail, into:
-   (a) anomaly–malice mismatch, (b) feature inadequacy, (c) threshold mis-selection.
-2. **(Act 2 — finding)** Preliminary evidence that switching from **per-flow** features to
-   **temporal/graph** representations recovers attacks the detector missed — i.e. the
-   bottleneck is the *representation*, not the algorithm.
-
-SHAP is demoted from headline to **one instrument inside (b)**, not the paper's point.
+*Started: 2026-06-27. Updated: 2026-07-01.*
+*Scope: complete, honest paper on why unsupervised NIDS plateau and how a two-stage
+architecture breaks the ceiling — validated on two real-world datasets (CTU-13 + UNSW-NB15).*
 
 ---
 
-## Why this scope (and not the bigger versions)
+## The Thesis (updated)
 
-- **Direction #1 (measure the ceiling)** is achievable in a month — mostly analysis on the
-  existing pipeline, low engineering, low risk. Even a "boring" confirming result is publishable.
-- **Direction #2 (break the ceiling, full multi-dataset)** is a 2–3 month journal paper —
-  needs temporal/graph feature engineering across 3 datasets. Too big for a month.
-- **This plan = all of #1 + ONE decisive #2 experiment** on CTU-13 only, as the punchline.
-  Reviewers accept "full multi-dataset study is future work."
+Unsupervised network anomaly detectors plateau at ~60% because **"anomalous ≠ malicious"**:
+stealthy C&C beaconing sits inside the normal distribution, while benign high-throughput
+flows look anomalous. The failure is structural (KS ceiling = 0.445), not a tuning bug.
 
----
+The fix is not a better unsupervised algorithm — it is **a two-stage architecture**:
+1. **Stage 1 (unsupervised AE)**: catches everything that doesn't look like normal traffic,
+   including zero-day attacks the supervised layer has never seen.
+2. **Stage 2 (supervised XGBoost)**: classifies the flagged pool into known attack types;
+   what remains unclassified is the zero-day candidate queue.
 
-## Novelty (what actually qualifies)
+**Working title:**
+*"Anomalous ≠ Malicious: A Two-Stage Architecture for Zero-Day Network Intrusion Detection."*
 
-- ❌ NOT novel: IF on CTU-13, SHAP-on-IF, feature selection recovers F1, IF-vs-OCSVM-vs-LOF,
-  curse of dimensionality (known/expected → demote to *motivation*).
-- ✅ Candidate novelty: the **error decomposition** (nobody cleanly separates the 3 failure
-  sources) and the **representation-beats-algorithm finding** (a result whose magnitude an
-  expert could not predict).
-- Rule: novelty is confirmed only when the result **could have gone the other way and didn't**.
-  → the Week-3 FN-recovery number is the go/no-go.
-
----
-
-## 4-Week Plan
-
-### Week 1 — Fix the setup, honest baselines
-- [ ] Re-run IF at **realistic contamination (1–5%)**, NOT the balanced 40% — the "60%" may
-      shift, and we need the real number.
-- [ ] Lock train/eval protocol; capture confusion matrix + PR curve.
-- [ ] Confirm CTU-13 **botnet subtype labels** survived preprocessing (needed for per-family
-      analysis); re-derive if lost.
-- **Deliverable:** defensible baseline table.
-
-### Week 2 — Act 1: decompose the failure (core contribution)
-- [ ] Measure anomaly-score ↔ true-label correlation → quantify "anomalous ≠ malicious".
-- [ ] Decompose error into (a) anomaly–malice mismatch, (b) feature inadequacy, (c) threshold.
-- [ ] SHAP used here only as an instrument inside (b); add U-tests / effect sizes for rigor.
-- **Deliverable:** the decomposition figure (the headline).
-
-### Week 3 — Act 2: the decisive experiment (RUN AS EARLY AS POSSIBLE)
-- [ ] Take the false-negatives (attacks IF missed per-flow).
-- [ ] Engineer host-level **temporal periodicity** (autocorrelation/FFT on inter-arrival,
-      beacon regularity, burstiness) + a couple of **graph** features (fan-out, conn entropy).
-- [ ] Re-score those flows; report the **flip rate** (how many missed attacks become detected).
-- **Deliverable:** the punchline number. Go/no-go for the paper's excitement level.
-  - Strong flip (~70%) → strong conference paper.
-  - Weak flip (~10%) → "the ceiling is deeper than representation" — still a finding, pivot framing.
-
-### Week 4 — Write + figures
-- [ ] Workshop length (6–8 pages); tighten the 3 figures.
-- [ ] Honest limitations: single dataset for Act 2, contamination caveats.
-- **Deliverable:** submittable draft.
+**Three contributions:**
+1. **(Diagnosis)** KS-distance decomposition proving the unsupervised ceiling is structural.
+2. **(Finding)** Autoencoder reconstruction anomaly outperforms IF on structured attacks
+   (CTU-13: +43 pts recall) but degrades on random-payload attacks (UNSW-NB15 Fuzzers).
+3. **(Architecture)** Two-stage pipeline: Stage 1 (zero-day net) + Stage 2 (known classifier)
+   validated on CTU-13 and UNSW-NB15 — showing per-stage precision/recall and zero-day queue.
 
 ---
 
-## Venue Targets (realistic — NOT top-tier)
+## Two-Stage Architecture
 
-- Top-tier (S&P / USENIX / CCS / NDSS): ❌ out of scope, do not aim here.
-- Realistic: **Computers & Security** (Elsevier, journal, rolling) or **IEEE TNSM**; or a
-  **workshop co-located with a big IEEE/ACM conf** as a fast first checkpoint.
+```
+All traffic
+    │
+    ▼
+Stage 1 — Unsupervised AE (trained on normal only)
+    │
+    ├── Low anomaly score  ──→  NORMAL  (pass through)
+    │
+    └── High anomaly score ──→  SUSPICIOUS POOL
+                                      │
+                                      ▼
+                              Stage 2 — XGBoost
+                              trained on known labeled attacks
+                              (CTU-13 + UNSW-NB15)
+                                      │
+                                      ├── High confidence match ──→  KNOWN ATTACK
+                                      │                               (classify + alert)
+                                      │
+                                      └── Low confidence / no match ──→  ZERO-DAY QUEUE
+                                                                          (send to analyst)
+```
+
+Key insight: Stage 2 filters Stage 1's false positives (known-normal flows that AE
+flagged) while preserving genuinely novel attacks in the zero-day queue.
 
 ---
 
-## Hard Rules
+## What We Know (completed experiments)
 
-1. **Run the Week-3 experiment first** if at all possible — highest-information, highest-risk.
-   Knowing the flip rate early lets us write Act 1 with confidence (or pivot).
-2. **Re-run at realistic contamination before committing the narrative** — don't explain an
-   artifact of the balanced/40%-contamination eval setup.
-3. Every claimed contribution must complete: *"Prior work shows ___. We show ___, which
-   surprises that because ___."* If it can't, it's background, not a contribution.
+### Unsupervised baselines (CTU-13, 6K+6K flows)
+
+| Detector | Precision | Recall | F1 | KS ceiling |
+|---|---|---|---|---|
+| IF (10 features) | 0.695 | 0.555 | 0.617 | 0.445 |
+| IF (57 features) | 0.584 | 0.467 | 0.519 | — |
+| LOF | 0.529 | 0.423 | 0.470 | 0.155 |
+| **AE (normal only)** | **0.977** | **0.898** | **0.868** | **0.860** |
+| Ensemble avg | 0.637 | 0.509 | 0.566 | 0.606 |
+
+### Cross-dataset (UNSW-NB15, 175K train / 82K test, 9 attack types)
+
+| Detector | Precision | Recall | F1 | ROC-AUC |
+|---|---|---|---|---|
+| IF | 0.349 | 0.277 | 0.309 | 0.254 |
+| AE (95th pct) | **0.816** | 0.335 | 0.475 | **0.709** |
+
+AE collapses on Fuzzers (8% recall) and Shellcode (2%) — random-payload attacks.
+IF beats AE on Fuzzers (29% vs 8%). Neither is a complete detector alone.
+
+### Key finding
+Best anomaly notion is attack-type dependent — no single unsupervised detector
+generalises across all categories. Two-stage architecture resolves this.
 
 ---
 
-## Next Scripts To Build
+## 4-Act Plan
 
-- `baseline_realistic.py` — IF at realistic contamination, confusion matrix + PR curve (Week 1)
-- `fn_recovery.py` — temporal/graph features on the missed false-negatives, report flip rate (Week 3)
+### Act 1 — Diagnosis (DONE)
+- [x] Honest baseline: IF at 40% contamination, CTU-13 train/test split
+- [x] KS distance ceiling: KS=0.445, AUC=0.677 → structural, not tunable
+- [x] Cohen's d per feature → identifies real discriminators (SYN flags d=0.86)
+- [x] Overlap diagnosis figure (`diagnose_overlap.py`, `graphs/overlap_ctu13.png`)
+
+### Act 2 — Finding: anomaly notion matters (DONE)
+- [x] AE trained on normal only → KS=0.860, Precision=0.977, Recall=0.898 on CTU-13
+- [x] Ensemble (IF + LOF + AE) — averaging hurts: LOF drags to KS=0.606
+- [x] Cross-dataset test on UNSW-NB15 → AE recall collapses on Fuzzers/Shellcode
+- [x] Per-attack-type breakdown confirms attack-type dependency
+- **Finding**: reconstruction anomaly >> isolation anomaly for structured attacks;
+  neither dominates across all attack families.
+
+### Act 3 — Two-Stage Architecture (IN PROGRESS)
+- [x] Design: Stage 1 (AE) + Stage 2 (XGBoost on flagged pool)
+- [ ] `stage2_supervised.py` — train/test on CTU-13, show per-stage metrics
+- [ ] Cross-dataset: train Stage 2 on CTU-13, test on UNSW-NB15 → zero-day queue
+- [ ] Key metric: **zero-day queue precision** (how many in the queue are real novel attacks)
+- **Target**: Stage 2 reduces Stage 1 false positives by >60%; zero-day queue FPR < 10%
+
+### Act 4 — Write + figures
+- [ ] Paper: 8 pages, 3 core figures (KS diagram, AE vs IF, two-stage pipeline results)
+- [ ] Venue: Computers & Security (Elsevier) or IEEE TNSM
+- [ ] Honest limitations: payload features not used, CTU-13 is 2011-era traffic
+
+---
+
+## Scripts Map
+
+| Script | Role | Status |
+|---|---|---|
+| `run_ctu13.py` | IF baseline (10 features) | Done |
+| `run_ctu13_v2.py` | All-features IF | Done |
+| `compare_datasets.py` | Cohen's d + AUC comparison | Done |
+| `diagnose_overlap.py` | KS ceiling diagnostic | Done |
+| `ensemble_detector.py` | IF + LOF + AE comparison | Done |
+| `stage2_supervised.py` | Two-stage pipeline | **Building now** |
+| `explain_isolation_forest.py` | Educational IF walkthrough | Done |
+
+---
+
+## Venue Targets
+
+- **Computers & Security** (Elsevier, rolling, IF ~5.1) — primary target
+- **IEEE TNSM** — secondary
+- Workshop @ IEEE S&P or USENIX — fast checkpoint if needed

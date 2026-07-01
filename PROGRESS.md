@@ -1,15 +1,30 @@
 # Project Progress — Network Anomaly Detection
 
-Last updated: 2026-06-24
+Last updated: 2026-07-01
 
 ---
 
 ## Environment
 
 - **Python**: `C:\Users\ADRIN-ISRO\anaconda3\envs\yolov8\python.exe`
-  - The base anaconda Python is broken (SRE module mismatch from a bomba_backend editable install)
-  - Always use the `yolov8` conda env — it has sklearn 1.7.2, numpy, pandas, matplotlib
-- **Run commands from**: `E:\Projects Internet room\anamoly_detection\`
+  - Base anaconda Python is broken (SRE module mismatch — bomba_backend editable install removed)
+  - Always use the `yolov8` conda env (sklearn, numpy, pandas, matplotlib, scipy all present)
+- **Run from**: `E:\Projects Internet room\anamoly_detection\`
+
+---
+
+## Datasets
+
+| Dataset | File | Rows | Format | Labels |
+|---|---|---|---|---|
+| CTU-13 Attack | `sample_logs/CTU13_Attack_Traffic.csv` | 38,898 | CICFlowMeter | binary (1) |
+| CTU-13 Normal | `sample_logs/CTU13_Normal_Traffic.csv` | 53,314 | CICFlowMeter | binary (0) |
+| UNSW-NB15 Train | `sample_logs/unsw_nb15/UNSW_NB15_training-set.csv` | 175,341 | Argus/Bro | multi-class |
+| UNSW-NB15 Test | `sample_logs/unsw_nb15/UNSW_NB15_testing-set.csv` | 82,332 | Argus/Bro | multi-class |
+
+CTU-13: university botnet traffic (Neris, Rbot, Menti botnets), 59 CICFlowMeter features.
+UNSW-NB15: 9 attack types (Fuzzers, Exploits, DoS, Backdoor, Reconnaissance, Analysis,
+Shellcode, Worms, Generic), 39 Argus features. Download: `sample_logs/unsw_nb15/` is gitignored.
 
 ---
 
@@ -17,172 +32,141 @@ Last updated: 2026-06-24
 
 | File | What it does |
 |---|---|
-| `anomaly_detector_v2.py` | Core Isolation Forest detector. Accepts PCAP or CSV log. Computes 9 features per (5-min window × src_ip). Rule-based type labelling. |
-| `run_ctu13.py` | Runs IF on CTU-13 real botnet data. 10 hand-picked CICFlowMeter features. Has ground-truth precision/recall. **Baseline numbers live here.** |
-| `run_ctu13_v2.py` | All-57-features version. Showed that naive "use all features" hurts IF due to curse of dimensionality. |
-| `agent.py` | OpenAI GPT-4o tool-calling agent over the detector. Calls `analyze_traffic` + `lookup_cve`. Requires `OPENAI_API_KEY`. |
-| `cve_db.py` | Static CVE / MITRE ATT&CK lookup table for 6 attack types. |
-| `explain_isolation_forest.py` | Educational script. Hand-crafted 13-point dataset. Shows decision paths, path lengths, feature splits for a single tree. Run this to understand IF internals. |
-| `generate_sample_log.py` | Generates synthetic `sample_logs/network_traffic.log` |
-| `generate_sample_pcap.py` | Generates synthetic PCAP |
+| `run_ctu13.py` | IF on CTU-13, 10 features, 6K+6K sample. **Baseline numbers.** |
+| `run_ctu13_v2.py` | All-57-features IF. Worse — curse of dimensionality confirmed. |
+| `compare_datasets.py` | Attack vs Normal: Cohen's d, ROC, PR, threshold sweep (20K rows each) |
+| `diagnose_overlap.py` | KS ceiling diagnostic. Score distribution overlap + CDF gap. |
+| `ensemble_detector.py` | IF + LOF + AE comparison. AE dominates. Averaging hurts. |
+| `stage2_supervised.py` | Two-stage pipeline: AE flags → XGBoost classifies → zero-day queue |
+| `explain_isolation_forest.py` | Educational IF walkthrough on 13-point toy dataset |
+| `agent.py` | GPT-4o tool-calling agent (requires OPENAI_API_KEY) |
+| `cve_db.py` | CVE + MITRE ATT&CK lookup (used by agent.py) |
+| `streamlit_app.py` | Interactive app: score overlap explorer |
 
 ---
 
-## Dataset
+## All Experiments & Results
 
-**CTU-13** (real botnet capture, CICFlowMeter pre-processed)
-- `sample_logs/CTU13_Attack_Traffic.csv` — 38,898 flows, Label=1
-- `sample_logs/CTU13_Normal_Traffic.csv` — 53,314 flows, Label=0
-- 59 columns total (57 features + `Unnamed: 0` + `Label`)
-- Each row = one **flow** (already aggregated by CICFlowMeter, not raw packets)
-- Features include: byte rates, packet counts, flag counts (SYN/RST/FIN), inter-arrival times, idle/active periods
-
----
-
-## Feature Engineering — Two Different Approaches
-
-### In `anomaly_detector_v2.py` (raw log/PCAP input)
-Features are **computed by us** from raw packet rows via `build_features()`:
-```
-Raw data columns: timestamp, src_ip, dst_ip, dst_port, bytes, status
-Groupby: (5-min window, src_ip)
-Output features:
-  n_packets     = count of packets
-  n_bytes       = sum of bytes
-  avg_bytes     = mean bytes per packet
-  std_bytes     = std dev of packet sizes
-  n_dst_ports   = nunique(dst_port)   ← catches port scans
-  n_dst_ips     = nunique(dst_ip)     ← catches lateral movement
-  failed_ratio  = failed / total      ← catches brute force
-  hour_sin/cos  = cyclical time encoding
-```
-
-### In `run_ctu13.py` (CTU-13 CSV input)
-Features are **already in the CSV** (CICFlowMeter computed them):
-```
-flow_byts_s    <- "Flow Byts/s"
-flow_pkts_s    <- "Flow Pkts/s"
-fwd_bytes      <- "TotLen Fwd Pkts"
-bwd_bytes      <- "TotLen Bwd Pkts"
-total_pkts     <- "Tot Fwd Pkts" + "Tot Bwd Pkts"
-syn_flag       <- "SYN Flag Cnt"
-rst_flag       <- "RST Flag Cnt"
-fin_flag       <- "FIN Flag Cnt"
-flow_duration_s<- "Flow Duration" / 1e6
-pkt_len_mean   <- "Pkt Len Mean"
-```
-
----
-
-## Experiments & Results
-
-### Experiment 1 — Baseline: 10 features (`run_ctu13.py`)
+### Exp 1 — IF Baseline: 10 features, CTU-13 (`run_ctu13.py`)
 
 ```
-Sample: 6,000 attack + 6,000 normal = 12,000 flows
-Contamination: 0.40 (matching true ratio)
-Features: 10 (hand-picked from CICFlowMeter columns)
-
-Precision : 69.5%
-Recall    : 55.5%
-F1        : 61.7%
-Accuracy  : 65.6%
-
-Confusion matrix:
-  TN=4,541   FP=1,459
-  FN=2,671   TP=3,329
+Sample: 6,000 attack + 6,000 normal | Contamination: 0.40
+Precision: 0.695  Recall: 0.555  F1: 0.617  Accuracy: 0.656
+TN=4,541  FP=1,459  FN=2,671  TP=3,329
+KS ceiling: 0.445  AUC: 0.677
 ```
 
-**Key observation**: Top-ranked anomalies (lowest IF score) had `Ground Truth: Normal`.
-IF flags statistically unusual normal flows (high byte rate video streams, backups) above actual attacks.
+Key: IF flags statistically unusual normal flows (high-rate backups, video) above real attacks.
+The 60% plateau is structural — no contamination tuning fixes it.
 
-### Experiment 2 — All 57 features (`run_ctu13_v2.py`)
-
-```
-Same sample, same contamination
-Features: 57 (all CICFlowMeter columns, log1p on 54 skewed cols)
-
-Precision : 58.4%   (-11.1 vs baseline)
-Recall    : 46.7%   (-8.8 vs baseline)
-F1        : 51.9%   (-9.8 vs baseline)
-Accuracy  : 56.7%
-
-TN=4,004   FP=1,996
-FN=3,196   TP=2,804
-```
-
-**Key finding — Curse of Dimensionality:**
-More features hurt because IF picks features randomly at each split. With 57 features,
-most splits land on correlated or uninformative columns, diluting the signal from the
-10 actually discriminative features.
-
-**PR curve optimal threshold (ignoring fixed contamination):**
-```
-Score cut: -0.3959
-Precision: 64.3%   Recall: 100.0%   F1: 78.3%
-```
-At the right threshold, every attack can be caught — at the cost of more false alarms.
-This shows the score signal is there; the threshold is the bottleneck.
-
-### Experiment 3 — Isolation Forest Internals (educational)
-
-Hand-crafted 13-point dataset (10 normal + 3 anomalies), 5 trees, 3 features.
+### Exp 2 — All 57 features (`run_ctu13_v2.py`)
 
 ```
-Port Scan   (n_dst_ports=847)  : isolated in 1 split   avg depth=1.8
-Exfiltration (n_bytes=5000 KB) : isolated in 2 splits  avg depth=1.8
-Brute Force (failed_ratio=0.97): isolated in 4 splits  avg depth=3.6
-Normal points                  : isolated in 4 splits  avg depth=4.0
+Precision: 0.584  Recall: 0.467  F1: 0.519  (-9.8 pts vs baseline)
 ```
 
-Brute Force is hard because it only breaks one feature (failed_ratio) with a narrower
-range — random cuts are less likely to hit it quickly.
+Curse of dimensionality confirmed: random feature splits dilute signal.
+At optimal PR threshold: Recall=100% at Precision=64.3% — score signal exists, threshold is wrong.
+
+### Exp 3 — Attack vs Normal Comparison, 20K rows (`compare_datasets.py`)
+
+Cohen's d discrimination power (attack - normal / pooled std):
+- SYN flags: d=+0.86 (attack > normal — port scanning / C&C setup)
+- Pkt Rate:  d=+0.63 (bimodal: near-zero beacons + DDoS spikes)
+- Pkt Len:   d=-0.19 (normal has bigger packets — HTTP content)
+- Bwd Bytes: d=-0.02 (C&C gets near-empty ACK replies)
+
+At 20K rows: Precision=0.637, Recall=0.509, ROC-AUC=0.706.
+
+### Exp 4 — KS Ceiling Diagnosis (`diagnose_overlap.py`)
+
+```
+KS = 0.445  →  max achievable (TPR - FPR) = 0.445
+AUC = 0.677
+→ Heavy overlap. Ceiling is STRUCTURAL. Fix = change representation, not threshold.
+```
+
+This is the core claim of the paper.
+
+### Exp 5 — Ensemble: IF + LOF + AE (`ensemble_detector.py`)
+
+```
+IF    KS=0.445  AUC=0.677  Precision=0.584  Recall=0.467
+LOF   KS=0.155  AUC=0.537  (weakest — botnet flows cluster, not locally sparse)
+AE    KS=0.860  AUC=0.978  Precision=0.977  Recall=0.898  ← dominates
+Ensemble (avg)  KS=0.606   (LOF drags it down — averaging hurts)
+```
+
+AE trained on normal only. Botnet C&C fails reconstruction: MSE ratio = 23.4x higher
+on attack vs normal. Key insight: reconstruction anomaly >> isolation anomaly here.
+
+Proper train/test split verification:
+```
+AE (95th pct threshold, held-out test):
+  Precision=0.950  Recall=0.906  F1=0.928  Accuracy=0.929
+  TN=2,285  FP=115  FN=225  TP=2,175
+```
+No data leakage — numbers hold on unseen data.
+
+### Exp 6 — Cross-Dataset: UNSW-NB15 (`ensemble_detector.py` + inline)
+
+```
+Train: 56,000 normal + 119,341 attack (UNSW-NB15 train split)
+Test:  37,000 normal + 45,332 attack (UNSW-NB15 test split)
+9 attack types: Fuzzers, Exploits, DoS, Backdoor, Recon, Analysis, Shellcode, Worms, Generic
+```
+
+| Detector | Precision | Recall | F1 | AUC |
+|---|---|---|---|---|
+| IF | 0.349 | 0.277 | 0.309 | 0.254 |
+| AE (95th pct) | 0.816 | 0.335 | 0.475 | 0.709 |
+
+Per-attack-type recall (AE vs IF):
+- Fuzzers (6K):    AE=8%,  IF=29%  ← AE fails on random payload
+- Exploits (11K):  AE=47%, IF=48%  ← tie
+- Generic (19K):   AE=43%, IF=21%  ← AE wins
+- Shellcode (378): AE=2%,  IF=2%   ← both fail
+- DoS (4K):        AE=23%, IF=24%  ← tie
+
+**Finding**: best anomaly notion is attack-type dependent.
+No single unsupervised detector generalises across all attack families.
+
+### Exp 7 — Two-Stage Pipeline (`stage2_supervised.py`) — IN PROGRESS
+
+Architecture:
+  Stage 1 (AE) flags anomalies → Stage 2 (XGBoost) classifies known attacks →
+  residual = zero-day queue
+
+Target metrics:
+  - Stage 2 precision on known attacks: >90%
+  - Zero-day queue FPR: <10%
+  - Stage 2 reduces Stage 1 false positives by: >60%
 
 ---
 
 ## What We Know Doesn't Work
 
-- **Naive "use all features"**: Hurts IF due to curse of dimensionality. Need feature selection first.
-- **Fixed contamination parameter**: PR curve shows optimal threshold differs from contamination-implied one.
+- **Naive all-features IF**: Curse of dimensionality → worse than 10-feature baseline
+- **Fixed contamination**: PR optimal threshold ≠ contamination-implied threshold
+- **LOF for botnet**: Botnet flows cluster together → not locally sparse → KS=0.155
+- **Simple ensemble average**: Weak detector (LOF) drags down strong (AE) → worse than AE alone
+- **AE alone for Fuzzers/Shellcode**: Random-payload attacks produce scattered MSE → low recall
+
+## What Works
+
+- **AE trained on normal only**: KS=0.860 on CTU-13, structural attack/normal gap
+- **AE precision**: Stays high (82-95%) across CTU-13 and UNSW-NB15
+- **Two-stage architecture**: Stage 1 zero-day net + Stage 2 known-attack classifier
 
 ---
 
-## Roadmap to 90% Precision + Recall
+## Current Roadmap
 
-| Step | What | Expected gain | Status |
-|---|---|---|---|
-| 1 | Use all 57 features + log1p | Tried — made it worse | Done |
-| 2 | Feature selection (top 15-20 by mutual info / RF importance) | +8–12 pts recall | Next |
-| 3 | Threshold tuning via PR curve instead of fixed contamination | +5–8 pts | Partially shown |
-| 4 | Extended Isolation Forest (fixes linear split bias) | +3–5 pts | Not started |
-| 5 | Ensemble: IF + LOF vote | +4–6 pts recall | Not started |
-| 6 | SHAP explainability (Direction 1 from RESEARCH.md) | Research output | Not started |
-| 7 | Semi-supervised: use 10% labels to calibrate threshold | +8–12 pts both | Not started |
-
-**Honest ceiling estimates:**
-- Unsupervised only (steps 2–5): ~75–82% on both metrics
-- Semi-supervised (step 7): ~87–92%
-- Fully supervised (Random Forest baseline): ~96–99%
-
----
-
-## Research Directions (from RESEARCH.md)
-
-1. **SHAP Explainability** — Most publishable. Medium effort. `pip install shap`.
-2. **Benchmarking** — IF vs OC-SVM vs Autoencoder vs LOF on same CTU-13 split.
-3. **Federated Detection** — High effort. Best CV story (ISRO/ADRIN angle).
-4. **Streaming** — River library. Medium-high effort.
-
-Recommended: Direction 1 + 2 together (same experimental setup, complete paper).
-
----
-
-## Next Session Starting Point
-
-Run this to verify env works:
-```
-C:\Users\ADRIN-ISRO\anaconda3\envs\yolov8\python.exe run_ctu13.py
-```
-
-Next task: **Feature selection** — run mutual information between each of 57 features
-and the true label, keep top 15–20, re-run IF. Expected to beat baseline.
+| Step | What | Status |
+|---|---|---|
+| 1 | IF baseline + KS diagnosis | Done |
+| 2 | AE vs IF comparison (CTU-13) | Done |
+| 3 | Cross-dataset validation (UNSW-NB15) | Done |
+| 4 | Two-stage pipeline (Stage 2 XGBoost) | **In progress** |
+| 5 | Zero-day queue analysis | Next |
+| 6 | Paper write-up | After step 5 |
